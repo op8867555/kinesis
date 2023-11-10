@@ -10,16 +10,15 @@ import eventlet
 import socketio
 from multiprocessing import Process
 import os
+from aiohttp import web
 
 
-def server(tunnel_host, tunnel_port):
+async def server(tunnel_host, tunnel_port):
     clients = {}
-    sio = socketio.Server(cors_allowed_origins='*')
-    app = socketio.WSGIApp(sio, static_files={
-        '/': os.path.join(os.path.dirname(__file__), 'index.html'),
-        '/index.js': os.path.join(os.path.dirname(__file__), 'index.js'),
-        '/main.css': os.path.join(os.path.dirname(__file__), 'main.css'),
-    })
+    sio = socketio.AsyncServer(cors_allowed_origins='*')
+    app = web.Application()
+    sio.attach(app)
+    app.router.add_static('/', os.path.dirname(__file__))
 
     @sio.event
     def connect(sid, environ):
@@ -41,10 +40,10 @@ def server(tunnel_host, tunnel_port):
         clients[sid][0].service.close()
         clients.pop(sid)
 
-    s = eventlet.listen(('localhost', 3000))
-    [ip, port] = s.getsockname()
-    print('--port', port)
-    eventlet.wsgi.server(s, app)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, 'localhost', 8080)
+    await site.start()
 
 
 async def start_quic_tunnel(service_provider: RemoteServiceDiscoveryService) -> None:
@@ -57,8 +56,7 @@ async def start_quic_tunnel(service_provider: RemoteServiceDiscoveryService) -> 
             print('Interface:', tunnel_result.interface)
             print('--rsd', tunnel_result.address, tunnel_result.port)
 
-            ui = Process(target=server, args=(tunnel_result.address, tunnel_result.port))
-            ui.start()
+            asyncio.create_task(server(tunnel_result.address, tunnel_result.port))
 
             while True:
                 await asyncio.sleep(.5)
