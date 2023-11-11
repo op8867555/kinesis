@@ -1,9 +1,5 @@
-const socket = io();
-
-
 const sendLocation = (latlng) => {
-    console.log(`emit location ${latlng}`);
-    socket.emit('location', latlng);
+    fetch(`/location?lat=${latlng.lat}&lng=${latlng.lng}`)
 }
 
 

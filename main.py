@@ -6,44 +6,34 @@ from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocket
 from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
 
 import asyncio
-import eventlet
-import socketio
 from multiprocessing import Process
 import os
-from aiohttp import web
+
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
+
+ctx = {}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    rsd = RemoteServiceDiscoveryService((tunnel_host, tunnel_port))
+    rsd.connect()
+    dvt = DvtSecureSocketProxyService(rsd)
+    dvt.perform_handshake()
+    loc = LocationSimulation(dvt)
+    ctx['loc'] = loc
+    yield
+    loc.stop()
+    dvt.service.close()
 
 
-async def server(tunnel_host, tunnel_port):
-    clients = {}
-    sio = socketio.AsyncServer(cors_allowed_origins='*')
-    app = web.Application()
-    sio.attach(app)
-    app.router.add_static('/', os.path.dirname(__file__))
+app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=os.path.dirname(os.path.realpath(__file__))))
 
-    @sio.event
-    def connect(sid, environ):
-        rsd = RemoteServiceDiscoveryService((tunnel_host, tunnel_port))
-        rsd.connect()
-        dvt = DvtSecureSocketProxyService(rsd)
-        dvt.perform_handshake()
-        loc = LocationSimulation(dvt)
-        clients[sid] = [rsd, loc]
-
-    @sio.event
-    def location(sid, data):
-        la, lo = list(map(lambda x: float(x), data.split(',')))
-        clients[sid][1].simulate_location(la, lo)
-
-    @sio.event
-    def disconnect(sid):
-        clients[sid][1].stop()
-        clients[sid][0].service.close()
-        clients.pop(sid)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, 'localhost', 8080)
-    await site.start()
+@app.get('/location')
+def location(lat: float, lng: float):
+    loc.simulate_location(la, lo)
 
 
 async def start_quic_tunnel(service_provider: RemoteServiceDiscoveryService) -> None:
@@ -56,8 +46,8 @@ async def start_quic_tunnel(service_provider: RemoteServiceDiscoveryService) -> 
             print('Interface:', tunnel_result.interface)
             print('--rsd', tunnel_result.address, tunnel_result.port)
 
-            asyncio.create_task(server(tunnel_result.address, tunnel_result.port))
-
+            p = Process(target=uvicorn.run, args=(app, host="0.0.0.0", port=8000))
+            p.start()
             while True:
                 await asyncio.sleep(.5)
 
